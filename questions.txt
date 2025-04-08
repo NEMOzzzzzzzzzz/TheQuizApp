@@ -1,0 +1,34 @@
+Q: What is the capital of France?
+1. London
+2. Berlin
+3. Paris
+4. Madrid
+A: 3
+
+Q: Which planet is known as the Red Planet?
+1. Venus
+2. Mars
+3. Jupiter
+4. Saturn
+A: 2
+
+Q: Who wrote "Romeo and Juliet"?
+1. Charles Dickens
+2. William Shakespeare
+3. Jane Austen
+4. Mark Twain
+A: 2
+
+Q: What is the chemical symbol for gold?
+1. Go
+2. Gd
+3. Au
+4. Ag
+A: 3
+
+Q: Which programming language was created by James Gosling?
+1. Python
+2. Java
+3. C++
+4. JavaScript
+A: 2
