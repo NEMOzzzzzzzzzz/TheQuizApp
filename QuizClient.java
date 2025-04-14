@@ -1,10 +1,11 @@
-import javax.swing.*;
 import java.awt.*;
 import java.awt.event.*;
 import java.io.*;
 import java.net.*;
 import java.util.*;
 import java.util.List;
+import java.util.Timer;
+import javax.swing.*;
 
 public class QuizClient extends JFrame {
     private JTextField serverAddressField;
@@ -21,6 +22,12 @@ public class QuizClient extends JFrame {
     private JLabel scoreLabel;
     private JLabel feedbackLabel;
     private JProgressBar progressBar;
+    // Timer components
+    private JProgressBar timerBar;
+    private JLabel timerLabel;
+    private Timer questionTimer;
+    private int timeLimit = 30; // Default, will be updated from server
+    private int timeRemaining;
     
     private Socket socket;
     private PrintWriter out;
@@ -98,17 +105,27 @@ public class QuizClient extends JFrame {
         questionLabel.setFont(new Font("SansSerif", Font.BOLD, 14));
         questionPanel.add(questionLabel, BorderLayout.NORTH);
         
+        // Add timer panel below question
+        JPanel timerPanel = new JPanel(new BorderLayout(5, 0));
+        timerPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
+        timerLabel = new JLabel("Time: 0s", SwingConstants.LEFT);
+        timerBar = new JProgressBar(0, timeLimit);
+        timerBar.setStringPainted(true);
+        timerBar.setString("0s");
+        timerPanel.add(timerLabel, BorderLayout.WEST);
+        timerPanel.add(timerBar, BorderLayout.CENTER);
+        questionPanel.add(timerPanel, BorderLayout.CENTER);
+        
         optionsPanel = new JPanel(new GridLayout(0, 1, 5, 5));
         optionsGroup = new ButtonGroup();
         JScrollPane optionsScrollPane = new JScrollPane(optionsPanel);
-        questionPanel.add(optionsScrollPane, BorderLayout.CENTER);
+        questionPanel.add(optionsScrollPane, BorderLayout.SOUTH);
         
         // Submit panel
         JPanel submitPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
         submitButton = new JButton("Submit Answer");
         submitButton.setEnabled(false);
         submitPanel.add(submitButton);
-        questionPanel.add(submitPanel, BorderLayout.SOUTH);
         
         // Score panel (South)
         scorePanel = new JPanel(new BorderLayout(5, 5));
@@ -121,6 +138,7 @@ public class QuizClient extends JFrame {
         feedbackLabel = new JLabel("", SwingConstants.CENTER);
         feedbackLabel.setFont(new Font("SansSerif", Font.ITALIC, 12));
         scorePanel.add(feedbackLabel, BorderLayout.CENTER);
+        scorePanel.add(submitPanel, BorderLayout.SOUTH);
         
         // Add panels to main panel
         mainPanel.add(connectionPanel, BorderLayout.NORTH);
@@ -184,6 +202,9 @@ public class QuizClient extends JFrame {
     private void disconnectFromServer() {
         isConnected = false;
         
+        // Stop any active timer
+        stopQuestionTimer();
+        
         try {
             if (out != null) out.close();
             if (in != null) in.close();
@@ -207,15 +228,66 @@ public class QuizClient extends JFrame {
             feedbackLabel.setText("");
             progressBar.setValue(0);
             progressBar.setString("0/0");
+            timerBar.setValue(0);
+            timerBar.setString("0s");
+            timerLabel.setText("Time: 0s");
         });
+    }
+    
+    // Start the question timer
+    private void startQuestionTimer() {
+        // Cancel any existing timer
+        stopQuestionTimer();
+        
+        timeRemaining = timeLimit;
+        timerBar.setMaximum(timeLimit);
+        timerBar.setValue(timeLimit);
+        timerBar.setString(timeLimit + "s");
+        timerBar.setForeground(Color.GREEN);
+        timerLabel.setText("Time: " + timeLimit + "s");
+        
+        questionTimer = new Timer();
+        questionTimer.scheduleAtFixedRate(new TimerTask() {
+            @Override
+            public void run() {
+                if (timeRemaining > 0) {
+                    timeRemaining--;
+                    
+                    SwingUtilities.invokeLater(() -> {
+                        timerBar.setValue(timeRemaining);
+                        timerBar.setString(timeRemaining + "s");
+                        timerLabel.setText("Time: " + timeRemaining + "s");
+                        
+                        // Change color based on time remaining
+                        if (timeRemaining < timeLimit * 0.25) {
+                            timerBar.setForeground(Color.RED);
+                        } else if (timeRemaining < timeLimit * 0.5) {
+                            timerBar.setForeground(Color.ORANGE);
+                        }
+                    });
+                } else {
+                    // Time's up - cancel the timer
+                    this.cancel();
+                }
+            }
+        }, 0, 1000);
+    }
+    
+    // Stop the question timer
+    private void stopQuestionTimer() {
+        if (questionTimer != null) {
+            questionTimer.cancel();
+            questionTimer = null;
+        }
     }
     
     private void startQuiz() {
         try {
             String line;
             
-            // Get total questions from server
+            // Process messages from server
             while ((line = in.readLine()) != null && isConnected) {
+                // Get total questions from server
                 if (line.startsWith("TOTAL:")) {
                     totalQuestions = Integer.parseInt(line.substring(6));
                     SwingUtilities.invokeLater(() -> {
@@ -223,29 +295,39 @@ public class QuizClient extends JFrame {
                         progressBar.setValue(0);
                         progressBar.setString("0/" + totalQuestions);
                     });
-                    break;
+                    continue;
                 }
-            }
-            
-            // Process questions
-            currentQuestionIndex = 0;
-            String currentQuestion = "";
-            List<String> options = new ArrayList<>();
-            
-            while ((line = in.readLine()) != null && isConnected) {
+                
+                // Get time limit from server
+                if (line.startsWith("TIMELIMIT:")) {
+                    timeLimit = Integer.parseInt(line.substring(10));
+                    SwingUtilities.invokeLater(() -> {
+                        timerBar.setMaximum(timeLimit);
+                        timerBar.setValue(0);
+                        timerBar.setString("0s");
+                        timerLabel.setText("Time: 0s");
+                    });
+                    continue;
+                }
+                
+                // Process question
                 if (line.startsWith("QUESTION:")) {
-                    currentQuestion = line.substring(9);
-                    options.clear();
+                    String currentQuestion = line.substring(9);
                     
                     final String questionText = currentQuestion;
                     SwingUtilities.invokeLater(() -> {
                         questionLabel.setText("<html><div style='text-align: center;'>" + 
-                                              "Question " + (currentQuestionIndex + 1) + "/" + totalQuestions + 
-                                              ":<br>" + questionText + "</div></html>");
+                                             "Question " + (currentQuestionIndex + 1) + "/" + totalQuestions + 
+                                             ":<br>" + questionText + "</div></html>");
+                        feedbackLabel.setText("");
                     });
-                    
-                } else if (line.startsWith("OPTIONS:")) {
+                    continue;
+                }
+                
+                // Process options
+                if (line.startsWith("OPTIONS:")) {
                     int numOptions = Integer.parseInt(line.substring(8));
+                    List<String> options = new ArrayList<>();
                     
                     for (int i = 0; i < numOptions && isConnected; i++) {
                         String option = in.readLine();
@@ -258,24 +340,57 @@ public class QuizClient extends JFrame {
                     SwingUtilities.invokeLater(() -> {
                         displayOptions(finalOptions);
                         submitButton.setEnabled(true);
+                        startQuestionTimer(); // Start timer when options are displayed
                     });
-                    
-                } else if (line.startsWith("RESULT:")) {
+                    continue;
+                }
+                
+                // Handle time expired notification
+                if (line.equals("TIME_EXPIRED")) {
+                    SwingUtilities.invokeLater(() -> {
+                        stopQuestionTimer();
+                        JOptionPane.showMessageDialog(this,
+                            "Time expired! The question will be marked as incorrect.",
+                            "Time's Up",
+                            JOptionPane.WARNING_MESSAGE);
+                        // Auto-submit with current selection (or no selection)
+                        submitAnswer();
+                    });
+                    continue;
+                }
+                
+                // Process result from server - handle both original and new formats
+                if (line.startsWith("RESULT:")) {
                     String result = line.substring(7);
                     if (result.startsWith("CORRECT")) {
                         SwingUtilities.invokeLater(() -> {
+                            stopQuestionTimer();
                             feedbackLabel.setText("Correct answer!");
                             feedbackLabel.setForeground(new Color(0, 150, 0));
+                            submitButton.setEnabled(false);
                         });
-                    } else if (result.startsWith("INCORRECT")) {
+                    } else if (result.startsWith("INCORRECT:")) {
                         int correctAnswer = Integer.parseInt(result.split(":")[1]);
                         SwingUtilities.invokeLater(() -> {
+                            stopQuestionTimer();
                             feedbackLabel.setText("Incorrect! The correct answer was: " + correctAnswer);
                             feedbackLabel.setForeground(Color.RED);
+                            submitButton.setEnabled(false);
+                        });
+                    } else if (result.startsWith("TIMEOUT:")) {
+                        int correctAnswer = Integer.parseInt(result.split(":")[1]);
+                        SwingUtilities.invokeLater(() -> {
+                            stopQuestionTimer();
+                            feedbackLabel.setText("Time expired! The correct answer was: " + correctAnswer);
+                            feedbackLabel.setForeground(Color.RED);
+                            submitButton.setEnabled(false);
                         });
                     }
-                    
-                } else if (line.startsWith("SCORE:")) {
+                    continue;
+                }
+                
+                // Process score update
+                if (line.startsWith("SCORE:")) {
                     String scoreInfo = line.substring(6);
                     final String scoreText = "Score: " + scoreInfo;
                     
@@ -284,11 +399,20 @@ public class QuizClient extends JFrame {
                         currentQuestionIndex++;
                         progressBar.setValue(currentQuestionIndex);
                         progressBar.setString(currentQuestionIndex + "/" + totalQuestions);
+                        
+                        // Reset timer display
+                        timerBar.setValue(0);
+                        timerBar.setString("0s");
+                        timerLabel.setText("Time: 0s");
                     });
-                    
-                } else if (line.startsWith("FINISHED:")) {
+                    continue;
+                }
+                
+                // Handle quiz completion
+                if (line.startsWith("FINISHED:")) {
                     final String message = line.substring(9);
                     SwingUtilities.invokeLater(() -> {
+                        stopQuestionTimer();
                         questionLabel.setText("Quiz Completed!");
                         clearOptions();
                         submitButton.setEnabled(false);
@@ -301,37 +425,51 @@ public class QuizClient extends JFrame {
                             "Quiz Completed",
                             JOptionPane.INFORMATION_MESSAGE);
                     });
-                    
-                    // No need to disconnect as the server will keep the connection open
-                    // to allow the client to see the final results
-                    
-                } else if (line.startsWith("ERROR:")) {
+                    continue;
+                }
+                
+                // Server error
+                if (line.startsWith("ERROR:")) {
                     final String errorMsg = line.substring(6);
                     SwingUtilities.invokeLater(() -> {
-                        JOptionPane.showMessageDialog(this,
-                            "Server error: " + errorMsg,
-                            "Error",
+                        JOptionPane.showMessageDialog(this, 
+                            "Server error: " + errorMsg, 
+                            "Error", 
                             JOptionPane.ERROR_MESSAGE);
                     });
+                    continue;
                 }
+            }
+            
+            // If we're here and still connected, server probably disconnected
+            if (isConnected) {
+                SwingUtilities.invokeLater(() -> {
+                    disconnectFromServer();
+                    JOptionPane.showMessageDialog(this, 
+                        "Lost connection to the server", 
+                        "Connection Lost", 
+                        JOptionPane.WARNING_MESSAGE);
+                });
             }
             
         } catch (IOException e) {
             if (isConnected) {
                 SwingUtilities.invokeLater(() -> {
-                    JOptionPane.showMessageDialog(this,
-                        "Lost connection to server: " + e.getMessage(),
-                        "Connection Error",
-                        JOptionPane.ERROR_MESSAGE);
                     disconnectFromServer();
+                    JOptionPane.showMessageDialog(this, 
+                        "Connection error: " + e.getMessage(), 
+                        "Connection Error", 
+                        JOptionPane.ERROR_MESSAGE);
                 });
             }
         }
     }
     
     private void displayOptions(List<String> options) {
+        // Clear previous options
         clearOptions();
         
+        // Add new options
         for (int i = 0; i < options.size(); i++) {
             final int optionIndex = i + 1;
             JRadioButton radioButton = new JRadioButton(optionIndex + ". " + options.get(i));
@@ -341,6 +479,12 @@ public class QuizClient extends JFrame {
             optionButtons.add(radioButton);
         }
         
+        // If there are options, select the first one by default
+        if (!optionButtons.isEmpty()) {
+            optionButtons.get(0).setSelected(true);
+        }
+        
+        // Revalidate and repaint
         optionsPanel.revalidate();
         optionsPanel.repaint();
     }
@@ -354,22 +498,32 @@ public class QuizClient extends JFrame {
     }
     
     private void submitAnswer() {
+        if (!isConnected) return;
+        
         ButtonModel selectedButton = optionsGroup.getSelection();
         
         if (selectedButton == null) {
-            JOptionPane.showMessageDialog(this,
-                "Please select an answer before submitting.",
-                "No Answer Selected",
-                JOptionPane.WARNING_MESSAGE);
-            return;
+            // If no answer is selected, send -1 to indicate no selection
+            out.println("ANSWER:-1");
+        } else {
+            String answer = selectedButton.getActionCommand();
+            out.println("ANSWER:" + answer);
         }
         
-        String answer = selectedButton.getActionCommand();
-        out.println("ANSWER:" + answer);
+        // Disable submit button until next question
         submitButton.setEnabled(false);
     }
     
     public static void main(String[] args) {
+        // Set look and feel to the system look and feel
+        try {
+            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+        } catch (ClassNotFoundException | InstantiationException | 
+                 IllegalAccessException | UnsupportedLookAndFeelException e) {
+            e.printStackTrace();
+        }
+        
+        // Create and show GUI
         SwingUtilities.invokeLater(() -> {
             QuizClient client = new QuizClient();
             client.setVisible(true);
