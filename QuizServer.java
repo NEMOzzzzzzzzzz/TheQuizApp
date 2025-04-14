@@ -1,4 +1,3 @@
-import javax.swing.*;
 import java.awt.*;
 import java.awt.event.*;
 import java.io.*;
@@ -7,6 +6,7 @@ import java.util.*;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import javax.swing.*;
 
 public class QuizServer extends JFrame {
     private JTextArea logArea;
@@ -16,11 +16,13 @@ public class QuizServer extends JFrame {
     private JSpinner portSpinner;
     private JTextField filePathField;
     private JButton browseButton;
+    private JSpinner timerSpinner; // New timer spinner
     
     private ServerSocket serverSocket;
     private boolean isRunning = false;
     private List<Question> questions = new ArrayList<>();
     private ExecutorService threadPool;
+    private int questionTimeLimit = 30; // Default time limit in seconds
     
     public QuizServer() {
         setTitle("Quiz Server");
@@ -62,6 +64,17 @@ public class QuizServer extends JFrame {
         gbc.gridwidth = 2;
         controlPanel.add(portSpinner, gbc);
         
+        // Timer configuration - NEW
+        gbc.gridx = 0;
+        gbc.gridy = 2;
+        gbc.gridwidth = 1;
+        controlPanel.add(new JLabel("Time per Question (seconds):"), gbc);
+        
+        timerSpinner = new JSpinner(new SpinnerNumberModel(30, 5, 300, 5));
+        gbc.gridx = 1;
+        gbc.gridwidth = 2;
+        controlPanel.add(timerSpinner, gbc);
+        
         // Start/Stop buttons
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
         startButton = new JButton("Start Server");
@@ -71,7 +84,7 @@ public class QuizServer extends JFrame {
         buttonPanel.add(stopButton);
         
         gbc.gridx = 0;
-        gbc.gridy = 2;
+        gbc.gridy = 3;
         gbc.gridwidth = 3;
         controlPanel.add(buttonPanel, gbc);
         
@@ -79,7 +92,7 @@ public class QuizServer extends JFrame {
         statusLabel = new JLabel("Server Stopped", SwingConstants.CENTER);
         statusLabel.setForeground(Color.RED);
         gbc.gridx = 0;
-        gbc.gridy = 3;
+        gbc.gridy = 4;
         controlPanel.add(statusLabel, gbc);
         
         // Log area
@@ -129,6 +142,7 @@ public class QuizServer extends JFrame {
         }
         
         int port = (Integer) portSpinner.getValue();
+        questionTimeLimit = (Integer) timerSpinner.getValue(); // Get the time limit from spinner
         
         try {
             serverSocket = new ServerSocket(port);
@@ -141,11 +155,13 @@ public class QuizServer extends JFrame {
             portSpinner.setEnabled(false);
             filePathField.setEnabled(false);
             browseButton.setEnabled(false);
+            timerSpinner.setEnabled(false); // Disable timer spinner
             statusLabel.setText("Server Running on port " + port);
             statusLabel.setForeground(Color.GREEN);
             
             logMessage("Server started on port " + port);
             logMessage("Loaded " + questions.size() + " questions");
+            logMessage("Time limit set to " + questionTimeLimit + " seconds per question");
             
             // Start accepting client connections in a separate thread
             threadPool.execute(() -> {
@@ -202,6 +218,7 @@ public class QuizServer extends JFrame {
             portSpinner.setEnabled(true);
             filePathField.setEnabled(true);
             browseButton.setEnabled(true);
+            timerSpinner.setEnabled(true); // Enable timer spinner
             statusLabel.setText("Server Stopped");
             statusLabel.setForeground(Color.RED);
             logMessage("Server stopped");
@@ -317,6 +334,8 @@ public class QuizServer extends JFrame {
         private PrintWriter out;
         private BufferedReader in;
         private String clientAddress;
+        private java.util.Timer questionTimer;
+        private boolean timeExpired;
         
         public ClientHandler(Socket socket, List<Question> questions) {
             this.clientSocket = socket;
@@ -331,8 +350,9 @@ public class QuizServer extends JFrame {
                 out = new PrintWriter(clientSocket.getOutputStream(), true);
                 in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
                 
-                // Send number of questions
+                // Send number of questions and time limit
                 out.println("TOTAL:" + questions.size());
+                out.println("TIMELIMIT:" + questionTimeLimit);
                 
                 int currentQuestion = 0;
                 int score = 0;
@@ -340,6 +360,7 @@ public class QuizServer extends JFrame {
                 // Process each question
                 while (currentQuestion < questions.size()) {
                     Question q = questions.get(currentQuestion);
+                    timeExpired = false;
                     
                     // Send question to client
                     out.println("QUESTION:" + q.getQuestion());
@@ -351,10 +372,43 @@ public class QuizServer extends JFrame {
                         out.println(option);
                     }
                     
+                    // Start timer for this question
+                    final int qNumber = currentQuestion + 1;
+                    questionTimer = new java.util.Timer();
+                    questionTimer.schedule(new TimerTask() {
+                        @Override
+                        public void run() {
+                            if (!timeExpired) {
+                                timeExpired = true;
+                                out.println("TIME_EXPIRED");
+                                
+                                SwingUtilities.invokeLater(() -> 
+                                    logMessage("Client " + clientAddress + " time expired for question " + qNumber)
+                                );
+                            }
+                        }
+                    }, questionTimeLimit * 1000);
+                    
                     // Wait for answer from client
                     String response = in.readLine();
                     if (response == null) {
+                        if (questionTimer != null) {
+                            questionTimer.cancel();
+                        }
                         break; // Client disconnected
+                    }
+                    
+                    // Cancel the timer since we got a response
+                    if (questionTimer != null) {
+                        questionTimer.cancel();
+                    }
+                    
+                    if (timeExpired) {
+                        // Time already expired, move to next question
+                        out.println("RESULT:TIMEOUT:" + q.getCorrectAnswer());
+                        currentQuestion++;
+                        out.println("SCORE:" + score + "/" + currentQuestion);
+                        continue;
                     }
                     
                     if (response.startsWith("ANSWER:")) {
@@ -402,6 +456,9 @@ public class QuizServer extends JFrame {
                 );
                 
             } catch (IOException e) {
+                if (questionTimer != null) {
+                    questionTimer.cancel();
+                }
                 SwingUtilities.invokeLater(() -> 
                     logMessage("Error handling client " + clientAddress + ": " + e.getMessage())
                 );
